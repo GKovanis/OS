@@ -1,0 +1,152 @@
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <string.h>
+
+#include "proc-common.h"
+#include "tree.h"
+
+#define SLEEP_PROC_SEC  10
+#define SLEEP_TREE_SEC  3
+
+int exit_stat=0;
+void fork_procs(struct tree_node *node,int fd)
+{
+    //If not children, then sleep
+    //If children, I create and wait() for each one
+
+    change_pname(node->name);//Change process name
+    printf("%s was created!!\n",node->name);
+
+    if(node->nr_children==0){//If leaf, then sleep
+        int value=atoi(node->name);
+        printf("%s,pid=%ld: Sending back the value %d.\n",node->name,(long)getpid(),value);
+
+        if( write(fd,&value,sizeof(value)) != sizeof(value) ) { //send the value
+            perror("write to pipe");
+            exit(1);
+        }
+        printf("%s: Exiting...\n",node->name);//could wait to see if the value is read //correctly
+        exit(exit_stat);
+    }
+
+    pid_t pid;
+    int i,status;
+    int arr_fd[node->nr_children][2];
+
+    for(i=0;i<node->nr_children;i++){
+        if(pipe(arr_fd[i]) < 0){//for every child make a pipe(2 pipes in total)
+            perror("pipe");
+            exit(1);
+        }
+        pid=fork();
+        if(pid<0){
+            perror("fork");
+            exit(1);
+        }else if(pid==0){
+            fork_procs((node->children)+i,arr_fd[i][1]);
+            //recursion
+        }
+    }
+
+
+
+    for(i=0;i<node->nr_children;i++){//for every child,wait for it and then read //the value from fd
+        pid = wait(&status);
+        explain_wait_status(pid, status);
+    }
+
+//After all children are finished, I read what they gave me
+
+    int value1,value2;
+    if (read(arr_fd[0][0], &value1, sizeof(value1)) != sizeof(value1)) {
+        perror("read from pipe");
+        exit(1);
+    }
+    if (read(arr_fd[1][0], &value2, sizeof(value2)) != sizeof(value2)) {
+        perror("read from pipe");
+        exit(1);
+    }
+
+    //write the output to the father
+    if(strcmp(node->name,"+")==0){
+        int value=value1+value2;
+        printf("\n\n I am %ld and i return %d  \n\n",(long)getpid(),value);
+        if( write(fd,&value,sizeof(value)) != sizeof(value) ) { //send the value
+            perror("write to pipe");
+            exit(1);
+        }
+    }else if(strcmp(node->name,"*")==0){
+        int value=value1*value2;
+        printf("\n\n I am %ld and i return %d  \n\n",(long)getpid(),value);
+        if( write(fd,&value,sizeof(value)) != sizeof(value) ) { //send the value
+            perror("write to pipe");
+            exit(1);
+        }
+    }else{
+        printf("Pid=%ld,unknown character\n",(long)getpid());
+        exit(1);
+    }
+
+
+    printf("%s: Exiting...\n",node->name);
+    exit(exit_stat);
+}
+
+int main(int argc,char **argv)
+{
+    pid_t pid;
+    int status;
+
+    int pfd[2];
+
+    struct tree_node *root;
+
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <input_tree_file>\n\n", argv[0]);
+        exit(1);
+    }
+
+    root = get_tree_from_file(argv[1]);
+    //print_tree(root);
+
+    if(pipe(pfd) < 0){
+        perror("pipe");
+        exit(1);
+    }
+
+    /* Fork root of process tree */
+    pid = fork();
+    if (pid < 0) {
+        perror("main: fork");
+        exit(1);
+    }
+    if (pid == 0) {
+        /* Child */
+        fork_procs(root,pfd[1]);
+        exit(1);
+    }
+
+    // Father
+
+    sleep(SLEEP_TREE_SEC);
+
+    /* Print the process tree root at pid */
+    //show_pstree(pid);
+
+    /* Wait for the root of the process tree to terminate */
+    pid = wait(&status);
+    explain_wait_status(pid, status);
+
+    int value;
+    if (read(pfd[0], &value, sizeof(value)) != sizeof(value)) {
+        perror("read from pipe");
+        exit(1);
+    }
+
+    printf("\n\nThe result was %d\n\n",value);
+    return 0;
+}

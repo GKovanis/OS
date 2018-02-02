@@ -1,0 +1,96 @@
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include "proc-common.h"
+#include "tree.h"
+
+#define SLEEP_PROC_SEC  10
+#define SLEEP_TREE_SEC  3
+
+int exit_stat=0;
+void fork_procs(struct tree_node *node)
+{
+    //If not children, then sleep
+    //If children, I create and wait() for each one
+
+    change_pname(node->name);//Change process name
+    printf("%s was created!!\n",node->name);
+
+    if(node->nr_children==0){//If leaf, then sleep
+        printf("%s: Going to sleep.\n",node->name);
+        sleep(SLEEP_PROC_SEC);//It sleeps because it is a leaf
+        printf("%s: Exiting...\n",node->name);
+        exit(exit_stat);
+    }
+
+    pid_t p;
+    int i,status;
+    for(i=0;i<node->nr_children;i++){
+        p=fork();
+        if(p<0){
+            perror("fork");
+            exit(1);
+        }else if(p==0){
+            fork_procs((node->children)+i);
+            //recursion
+        }
+    }
+
+    //Created all the children for this node so now Ι wait for them
+    printf("%s: Waiting...\n",node->name);
+
+
+    for (i = 0; i < node->nr_children; i++) {
+        /* Wait for any child*/
+        p = waitpid(-1, &status,0); // equal to wait(&status)
+        explain_wait_status(p, status);
+    }
+
+    printf("%s: Exiting...\n",node->name);
+    exit(exit_stat);
+}
+int main(int argc,char **argv)
+{
+    pid_t pid;
+    int status;
+
+    struct tree_node *root;
+
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <input_tree_file>\n\n", argv[0]);
+        exit(1);
+    }
+
+    root = get_tree_from_file(argv[1]);
+ //   print_tree(root);
+
+
+    /* Fork root of process tree */
+    pid = fork();
+    if (pid < 0) {
+        perror("main: fork");
+        exit(1);
+    }
+    if (pid == 0) {
+        /* Child */
+        fork_procs(root);
+        exit(1);
+    }
+
+    /*Father */
+    sleep(SLEEP_TREE_SEC);
+
+    /* Print the process tree root at pid */
+    show_pstree(pid);
+
+    
+    /* Wait for the root of the process tree to terminate */
+    pid = wait(&status);
+    explain_wait_status(pid, status);
+
+    return 0;
+}

@@ -1,0 +1,84 @@
+#include <stdio.h>
+
+struct kgarten_struct {
+/*
+* Here you may define any mutexes / condition variables / other variables
+* you may need.
+*/
+pthread_cond_t cond;
+/*
+* You may NOT modify or use anything in the structure below this
+* point. They are only meant to be used by the framework code,
+* for verification.
+*/
+int vt;
+int vc;
+int ratio;
+pthread_mutex_t mutex;
+};
+void child_enter(struct thread_info_struct *thr)
+{
+if (!thr->is_child) {
+fprintf(stderr, "Internal error: %s called for a Teacher thread.\n",
+__func__);
+exit(1);
+}
+fprintf(stderr, "THREAD %d: CHILD ENTER\n", thr->thrid);
+pthread_mutex_lock(&thr->kg->mutex);
+fprintf(stderr, "THREAD %d: CHILD ENTER\n", thr->thrid);
+while((thr->kg->vc) >= (thr->kg->vt) * (thr->kg->ratio)){
+pthread_cond_wait(&thr->kg->cond,&thr->kg->mutex);
+}
+++(thr->kg->vc);
+//pthread_cond_signal(&thr->kg->cond);
+pthread_mutex_unlock(&thr->kg->mutex);
+}
+void child_exit(struct thread_info_struct *thr)
+{
+if (!thr->is_child) {
+fprintf(stderr, "Internal error: %s called for a Teacher thread.\n",
+__func__);
+exit(1);
+}
+fprintf(stderr, "THREAD %d: CHILD EXIT\n", thr->thrid);
+pthread_mutex_lock(&thr->kg->mutex);
+--(thr->kg->vc);
+pthread_cond_broadcast(&thr->kg->cond);pthread_mutex_unlock(&thr->kg->mutex);
+}
+void teacher_enter(struct thread_info_struct *thr)
+{
+if (thr->is_child) {
+fprintf(stderr, "Internal error: %s called for a Child thread.\n",
+__func__);
+exit(1);
+}
+fprintf(stderr, "THREAD %d: TEACHER ENTER\n", thr->thrid);
+pthread_mutex_lock(&thr->kg->mutex);
+++(thr->kg->vt);
+pthread_cond_broadcast(&thr->kg->cond);
+pthread_mutex_unlock(&thr->kg->mutex);
+}
+void teacher_exit(struct thread_info_struct *thr)
+{
+if (thr->is_child) {
+fprintf(stderr, "Internal error: %s called for a Child thread.\n",
+__func__);
+exit(1);
+}
+fprintf(stderr, "THREAD %d: TEACHER EXIT\n", thr->thrid);
+}
+pthread_mutex_lock(&thr->kg->mutex);
+fprintf(stderr, "THREAD %d: TEACHER EXIT\n", thr->thrid);
+while((thr->kg->vc) > ((thr->kg->vt) - 1) * (thr->kg->ratio)){
+pthread_cond_wait(&thr->kg->cond,&thr->kg->mutex);
+}
+--(thr->kg->vt);
+//pthread_cond_signal(&thr->kg->cond);
+pthread_mutex_unlock(&thr->kg->mutex);
+ενώ στο τέλος της main προσθέσαμε το εξής κομμάτι:
+// Destroy the condition variable
+ret = pthread_cond_destroy(&kg->cond);
+if (ret) {
+perror_pthread(ret, "pthread_cond_destroy");
+exit(1);
+}

@@ -1,0 +1,58 @@
+#include <stdio.h>
+
+pthdead_mutex_t lock;
+
+void *increase_fn(void *arg)
+{
+int i;
+volatile int *ip = arg;
+fprintf(stderr, "About to increase variable %d times\n", N);
+for (i = 0; i < N; i++) {
+if (USE_ATOMIC_OPS) {
+__sync_add_and_fetch (ip, 1);
+} else {//MUTEX
+int ret;
+ret=pthread_mutex_lock(&lock);
+if(ret!=0){
+perror_pthread(ret,"Mutex lock\n");
+exit(1);
+}
+/* You cannot modify the following line */
+++(*ip);
+ret=pthread_mutex_unlock(&lock);
+if(ret!=0){
+perror_pthread(ret,"Mutex unlock\n");
+exit(1);
+}
+}
+}
+fprintf(stderr, "Done increasing variable.\n");
+}
+return NULL;void *decrease_fn(void *arg)
+{
+int i;
+volatile int *ip = arg;
+fprintf(stderr, "About to decrease variable %d times\n", N);
+for (i = 0; i < N; i++) {
+if (USE_ATOMIC_OPS) {
+__sync_sub_and_fetch (ip, 1);
+//--(*ip);
+} else {
+int ret;
+ret = pthread_mutex_lock(&lock);
+if(ret!=0){
+perror_pthread(ret,"Mutex lock\n");
+exit(1);
+}
+/* You cannot modify the following line */
+--(*ip);
+ret = pthread_mutex_unlock(&lock);
+if(ret!=0){
+perror_pthread(ret,"Mutex lock\n");
+exit(1);
+}
+}
+}
+fprintf(stderr, "Done decreasing variable.\n");
+}
+return NULL;

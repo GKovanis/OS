@@ -1,0 +1,276 @@
+#include <errno.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <assert.h>
+
+#include <sys/wait.h>
+#include <sys/types.h>
+
+#include "proc-common.h"
+#include "request.h"
+
+/* Compile-time parameters. */
+#define SCHED_TQ_SEC 2                /* time quantum */
+#define TASK_NAME_SZ 60               /* maximum size for a task's name */
+
+
+void child(char *name) //δίνεται
+{
+ 
+    raise(SIGSTOP);//stop for the first time
+
+    char *newargv[] = { name, NULL, NULL, NULL };
+    char *newenviron[] = { NULL };
+
+    printf("About to replace myself with the executable %s...\n",
+            name);
+
+    execve(name, newargv, newenviron);
+
+    /* execve() only returns on error */
+    perror("execve");
+    exit(1);
+
+}
+
+struct procedure{ //we created it
+
+    int id;
+    int pid;
+    char name[TASK_NAME_SZ];
+    struct procedure *next;
+};
+
+struct procedure *head,*tail;
+
+
+/*
+ * SIGALRM handler
+ */
+static void
+sigalrm_handler(int signum) //we created it
+{
+    if (signum != SIGALRM) {
+        fprintf(stderr, "Internal error: Called for signum %d, not SIGALRM\n",
+                signum);
+        exit(1);
+    }
+
+    printf("About to stop procedure %s:id=%d:pid=%d\n",head->name,head->id,head->pid);
+    kill(head->pid,SIGSTOP);
+}
+
+/* 
+ * SIGCHLD handler
+ */
+static void
+sigchld_handler(int signum) //we created it
+{
+    pid_t p;
+    int status;
+
+    if (signum != SIGCHLD) {
+        fprintf(stderr, "Internal error: Called for signum %d, not SIGCHLD\n",
+                signum);
+        exit(1);
+    }
+
+    /*
+     * Something has happened to one of the children.
+     * We use waitpid() with the WUNTRACED flag, instead of wait(), because
+     * SIGCHLD may have been received for a stopped, not dead child.
+     *
+     * A single SIGCHLD may be received if many processes die at the same time.
+     * We use waitpid() with the WNOHANG flag in a loop, to make sure all
+     * children are taken care of before leaving the handler.
+     */
+
+    for (;;) {
+        p = waitpid(-1, &status, WUNTRACED | WNOHANG);
+        if (p < 0) {
+            perror("waitpid");
+            exit(1);
+        }
+        if (p == 0)
+            break;
+
+        explain_wait_status(p, status);
+
+        if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            /* A child has died */
+            printf("Parent: Received SIGCHLD, child is dead.\n");
+            //if the child that died was the only one,then exit
+            if(head->id==tail->id){
+                printf("Nothing more to do.Exiting\n");
+                exit(0);
+            }
+            struct procedure *temp;
+            temp=head;
+            head=head->next;
+            //free the memory
+            free(temp);
+            //set the timer
+            if (alarm(SCHED_TQ_SEC) < 0) {
+                perror("alarm");
+                exit(1);
+            }
+            //and wake up the next procedure
+            kill(head->pid,SIGCONT);
+        }
+        if (WIFSTOPPED(status)) {
+            /* A child has stopped due to SIGSTOP/SIGTSTP, etc... */
+            printf("Parent: Child has been stopped. Moving right along...\n");
+            //add the procedure to the end of the list
+            tail->next=head;
+            head=head->next;
+            tail=tail->next;
+            tail->next=NULL;
+            /* Arrange for an alarm after tq sec */
+            if (alarm(SCHED_TQ_SEC) < 0) {
+                perror("alarm");
+                exit(1);
+            }
+            //wake up the next procedure
+            kill(head->pid,SIGCONT);
+        }
+    }
+}
+
+/* Install two signal handlers.
+ * One for SIGCHLD, one for SIGALRM.
+ * Make sure both signals are masked when one of them is running.
+ */
+static void
+install_signal_handlers(void) //given
+{
+	sigset_t sigset;
+	struct sigaction sa;
+
+	sa.sa_handler = sigchld_handler;
+	sa.sa_flags = SA_RESTART;
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGCHLD);
+	sigaddset(&sigset, SIGALRM);
+	sa.sa_mask = sigset;
+	if (sigaction(SIGCHLD, &sa, NULL) < 0) {
+		perror("sigaction: sigchld");
+		exit(1);
+	}
+
+	sa.sa_handler = sigalrm_handler;
+	if (sigaction(SIGALRM, &sa, NULL) < 0) {
+		perror("sigaction: sigalrm");
+		exit(1);
+	}
+
+	/*
+	 * Ignore SIGPIPE, so that write()s to pipes
+	 * with no reader do not result in us being killed,
+	 * and write() returns EPIPE instead.
+	 */
+	if (signal(SIGPIPE, SIG_IGN) < 0) {
+		perror("signal: sigpipe");
+		exit(1);
+	}
+}
+
+void *safe_malloc(size_t size) 
+{
+    void *p;
+
+    if ((p = malloc(size)) == NULL) {
+        fprintf(stderr, "Out of memory, failed to allocate %zd bytes\n",
+                size);
+        exit(1);
+    }
+
+    return p;
+}
+
+int main(int argc, char *argv[])
+{
+	int nproc,i;
+    pid_t p;
+    struct procedure *temp;
+	/*
+	 * For each of argv[1] to argv[argc - 1],
+	 * create a new child process, add it to the process list.
+	 */
+
+	nproc = argc-1; /* number of proccesses goes here */
+
+	if (nproc == 0) {
+		fprintf(stderr, "Scheduler: No tasks. Exiting...\n");
+		exit(1);
+	}
+
+    for(i=0;i<nproc;i++){
+        printf("Parent: Creating child...\n");
+        p = fork();
+        if (p < 0) {
+            /* fork failed */
+            perror("fork");
+            exit(1);
+        }
+        if (p == 0) {
+            /* In child process */
+            child(argv[i+1]);
+            /*
+             * Should never reach this point,
+             * child() does not return
+             */
+            assert(0);
+        }
+        /*Create a struct for the new procedure and add it to the end of the list*/
+        temp=safe_malloc(1*sizeof(struct procedure));
+        temp->id=i;
+        temp->pid=p;
+        if(strlen(argv[i+1])>TASK_NAME_SZ-1){
+           printf("Name of the task too long.Exiting...\n");
+           exit(0);
+        }
+        strcpy(temp->name,argv[i+1]);
+        temp->next=NULL;
+        if(i==0){
+            head=temp;
+            tail=temp;
+        }else{
+            tail->next=temp;
+            tail=temp;
+        }
+    }
+
+    for(temp=head,i=0;i<nproc;temp=temp->next,i++){
+        printf("%s %d %d\n",temp->name,temp->id,temp->pid);
+    }
+
+
+	/* Wait for all children to raise SIGSTOP before exec()ing. */
+	wait_for_ready_children(nproc);
+
+
+	/* Install SIGALRM and SIGCHLD handlers. */
+	install_signal_handlers();
+    
+
+    /*start the clock and the first procedure*/
+    /* Arrange for an alarm after tq sec */
+    if (alarm(SCHED_TQ_SEC) < 0) {
+        perror("alarm");
+        exit(1);
+    }
+
+    kill(head->pid,SIGCONT);
+
+
+	/* loop forever  until we exit from inside a signal handler. */
+	while (pause())
+		;
+
+	/* Unreachable */
+	fprintf(stderr, "Internal error: Reached unreachable point\n");
+	return 1;
+}
